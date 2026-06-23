@@ -6,3 +6,4 @@ data/*.txt
 *.png
 __pycache__
 *~
+.claude/settings.local.json
