@@ -8,6 +8,7 @@
 #
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+import os
 import sys
 import matplotlib.pyplot as plt
 import numpy as np
@@ -345,6 +346,7 @@ def timeSeriesPlots(atmvars_in, lndvars_in, icevars_in, atmplot_in, lndplot_in, 
 #!! needs land and ice model plotting !!
 
     outdir = 'plots/snapshots'
+    os.makedirs(outdir, exist_ok=True)
 
     if (do_atm == True):
         print("Entering atmosphere model plot sequence...")
