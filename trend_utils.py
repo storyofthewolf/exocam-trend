@@ -60,7 +60,7 @@ def read_request_var():
     for var in atmPvars:
         if (var != 'energy'):
             indexr = np.where(np.array(atmRvars) == var)[0]
-            if (indexr >= 0):
+            if (len(indexr) > 0):
                 pass
             else:
                 print("ERROR: ",var, " requested to print, not on variable list")
@@ -69,7 +69,7 @@ def read_request_var():
     for var in atmPLvars:
         if (var != 'energy'):
             indexr = np.where(np.array(atmRvars) == var)[0]
-            if (indexr >= 0):
+            if (len(indexr) > 0):
                 pass
             else:
                 print("ERROR: ",var, " requested to plot, not on variable list")
@@ -79,7 +79,7 @@ def read_request_var():
     for var in icePvars:
         if (var != 'energy'):
             indexr = np.where(np.array(iceRvars) == var)[0]
-            if (indexr >= 0):
+            if (len(indexr) > 0):
                 pass
             else:
                 print("ERROR: ",var, " requested to print, not on variable list")
@@ -88,7 +88,7 @@ def read_request_var():
     for var in icePLvars:
         if (var != 'energy'):
             indexr = np.where(np.array(iceRvars) == var)[0]
-            if (indexr >= 0):
+            if (len(indexr) > 0):
                 pass
             else:
                 print("ERROR: ",var, " requested to plot, not on variable list")
@@ -98,7 +98,7 @@ def read_request_var():
     for var in lndPvars:
         if (var != 'energy'):
             indexr = np.where(np.array(lndRvars) == var)[0]
-            if (indexr >= 0):
+            if (len(indexr) > 0):
                 pass
             else:
                 print("ERROR: ",var, " requested to print, not on variable list")
@@ -107,7 +107,7 @@ def read_request_var():
     for var in lndPLvars:
         if (var != 'energy'):
             indexr = np.where(np.array(lndRvars) == var)[0]
-            if (indexr >= 0):
+            if (len(indexr) > 0):
                 pass
             else:
                 print("ERROR: ",var, " requested to plot, not on variable list")
@@ -152,9 +152,9 @@ def print2screen(atmvars_in, icevars_in, lndvars_in, atmprint_in, iceprint_in, l
 
         # include everything else in a general loop
         for var in atmprint_in:
-            if (var != 'energy'): 
+            if (var != 'energy'):
                 indexr = np.where(np.array(atmvars_in) == var)[0]
-                if (indexr >= 0):
+                if (len(indexr) > 0):
                     xi = indexr + atm_vars_offset
                     temp = np.array([vavg_vecA[xi], intavg1_vecA[xi], intavg2_vecA[xi]])
                     temp = np.squeeze(temp)
@@ -165,7 +165,7 @@ def print2screen(atmvars_in, icevars_in, lndvars_in, atmprint_in, iceprint_in, l
         # energy goes at the end
         value_to_find = 'energy'
         indexr = np.where(np.array(atmprint_in) == value_to_find)[0]
-        if (indexr > 0):
+        if (len(indexr) > 0):
             N = len(vavg_vecA)
             xi = N-1
             temp = np.array([vavg_vecA[xi], intavg1_vecA[xi], intavg2_vecA[xi]])
@@ -200,9 +200,9 @@ def print2screen(atmvars_in, icevars_in, lndvars_in, atmprint_in, iceprint_in, l
 
         # include everything else in a general loop
         for var in iceprint_in:
-            if (var != 'energy'): 
+            if (var != 'energy'):
                 indexr = np.where(np.array(icevars_in) == var)[0]
-                if (indexr >= 0):
+                if (len(indexr) > 0):
                     xi = indexr + ice_vars_offset
                     temp = np.array([vavg_vecI[xi], intavg1_vecI[xi], intavg2_vecI[xi]])
                     temp = np.squeeze(temp)
@@ -229,18 +229,25 @@ def print2screen(atmvars_in, icevars_in, lndvars_in, atmprint_in, iceprint_in, l
         print()
 
 
-    if (do_lnd == True): 
+    if (do_lnd == True):
         # include everything else in a general loop
         for var in lndprint_in:
-            if (var != 'energy'): 
+            if (var != 'energy'):
                 indexr = np.where(np.array(lndvars_in) == var)[0]
-                if (indexr >= 0):
-                    xi = indexr + lnd_vars_offset
+                if (len(indexr) > 0):
+                    xi = indexr + ice_vars_offset
                     temp = np.array([vavg_vecL[xi], intavg1_vecL[xi], intavg2_vecL[xi]])
                     temp = np.squeeze(temp)
                     lndout[0] = i
-                    lndout = np.hstack((iceout, temp)).flatten()
-                    lndout = np.squeeze(iceout)
+                    lndout = np.hstack((lndout, temp)).flatten()
+                    lndout = np.squeeze(lndout)
+
+        if (firstCall == True):
+            format_string = "{%s}"
+            print("i  ", end=' ',flush=True)
+            for x in lndprint_in:
+                print(x, end=' ',flush=True)
+            print()
 
         # Define the desired formatting
         format_string = "{:.3f}"
@@ -350,7 +357,7 @@ def timeSeriesPlots(atmvars_in, lndvars_in, icevars_in, atmplot_in, lndplot_in, 
             print(var)
             if (var != 'energy'):
                 indexr = np.where(np.array(atmvars_in) == var)[0]
-                if (indexr >= 0):
+                if (len(indexr) > 0):
                     xa = indexr + atm_vars_offset
                     x    = time_vecA[a]
                     var1 = vavg_vecA[a,xa]    ; var1 = np.squeeze(var1)
@@ -358,14 +365,12 @@ def timeSeriesPlots(atmvars_in, lndvars_in, icevars_in, atmplot_in, lndplot_in, 
                     var3 = intavg2_vecA[a,xa] ; var3 = np.squeeze(var3)
 
                     if auto_t_bound == True:
-                        if intavg2_vecA[0, xa] > intavg2_vecA[na, xa]:
-                        # decreasing curve
-                            y1 = min(intavg2_vecA[0:na, xa]) * 0.98
-                            y2 = min(intavg2_vecA[0:na, xa]) * 1.05
-                        elif intavg2_vecA[0, xa] <= intavg2_vecA[na, xa]:
-                        # increasing curve
-                            y1 = max(intavg2_vecA[0:na, xa]) * 0.95
-                            y2 = max(intavg2_vecA[0:na, xa]) * 1.02
+                        # bound by the actual min/max of the long-window curve so
+                        # neither end is clipped, regardless of trend direction
+                        cmin = min(intavg2_vecA[0:na, xa])
+                        cmax = max(intavg2_vecA[0:na, xa])
+                        y1 = cmin * 0.98
+                        y2 = cmax * 1.02
                     else:
                         # set your own limits, however these won't be correct for every variable
                         y1=0
@@ -396,14 +401,10 @@ def timeSeriesPlots(atmvars_in, lndvars_in, icevars_in, atmplot_in, lndplot_in, 
                 var5 = intavg1_vecA[a,xa] ; var5 = np.squeeze(var5)
                 var6 = intavg2_vecA[a,xa] ; var6 = np.squeeze(var6)
 
-                # found some cases where this isn't working properly
                 if auto_e_bound == True:
-                    bottom_arr = [var1, var2, var3, var4, var5, var6]
-                    top_arr = [var1, var2, var3, var4, var5, var6]
-                    y11 = np.minimum.reduce(bottom_arr)
-                    y22 = np.maximum.reduce(top_arr)
-                    y1  = np.minimum.reduce(y11)
-                    y2  = np.maximum.reduce(y22)
+                    all_series = np.concatenate([var1, var2, var3, var4, var5, var6])
+                    y1 = np.min(all_series)
+                    y2 = np.max(all_series)
                 else:
                     # set your own limits
                     y1=ey1

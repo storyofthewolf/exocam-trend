@@ -137,10 +137,5 @@ Years are zero-padded to 4 digits (e.g., `0010`).
 
 ## Known limitations and bugs
 
-- **`print2text` is partially implemented.** It writes only `vavg_vecA[i, 4]` (the first atmosphere variable) regardless of what is in `vars.in`. The ice branch has the same hardcoded-index bug and additionally uses `vavg_vecI[i, 4]` which is wrong (ice offset is 1, not 4).
-- **`timeSeriesPlots` only handles atmosphere variables.** Ice and land branches exist but do nothing (noted `#!! routine is incomplete !!` in the source).
-- **`lnd_vars_offset` is undefined in `trend_utils.py`.** The land branch of `print2screen` references `lnd_vars_offset` which is not declared; land screen output will raise a `NameError`. Use `ice_vars_offset` (also = 1) as the correct value.
-- **`print2text` argument order mismatch.** The call in `trend.py` passes `(do_atm, vnamesA, time_vecA, ...)` but the function signature is `(atmvars_in, lndvars_in, icevars_in, atmprint_in, ..., do_atm, vnamesA, ...)`. This will produce incorrect output or errors if `--data` is used.
-- **Auto y-axis bounds for temperature plots (`auto_t_bound`).** Logic at `trend_utils.py:352-359` compares `intavg2_vecA[0, xa]` vs `intavg2_vecA[na, xa]` to decide increasing vs. decreasing, but sets bounds from the min/max of the same array — the increasing case uses `max * 0.95` as the lower bound, which may clip the plot. Review if plots look clipped.
-- **Energy plot y-axis auto-bounds (`auto_e_bound`).** The `np.minimum.reduce` / `np.maximum.reduce` calls on a list of arrays work correctly but the comment notes known cases where this isn't working properly.
+- **`timeSeriesPlots` only handles atmosphere variables.** Ice and land branches exist but do nothing (noted `#!! routine is incomplete !!` in the source). The `do_ice`/`do_lnd` plotting paths remain intentionally stubbed for later.
 - **`--int1` must be less than `--int2`.** If `int1 >= int2`, `trend.py` resets `int1` to 1 year with a warning but does not exit. Both are capped to `N_actual` if the run is shorter than the requested window.

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('trend_utils.py'\\).read\\(\\)\\); print\\('trend_utils.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('trend_utils.py', doraise=True\\); print\\('compile OK'\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}
