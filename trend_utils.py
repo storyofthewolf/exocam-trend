@@ -426,6 +426,7 @@ def timeSeriesPlots(atmvars_in, lndvars_in, icevars_in, atmplot_in, lndplot_in, 
                 plt.legend()
                 outfile = '{}/{}_{}_{}.png'.format(outdir, case_id, var, firstDate)
                 plt.savefig(outfile, dpi=100)
+                if show: plt.show()
                 plt.close()
                 print('  saved {}'.format(outfile))
 
