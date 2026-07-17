@@ -258,6 +258,31 @@ print("========================================")
 print("=========  scanning file series ========")
 print("========================================")
 t0 = time.time()
+
+# Pre-scan sanity check on the first month of each enabled component. Without
+# it, a component that is entirely absent (e.g. --cice or --clm requested for a
+# boundary condition that has no sea-ice or land model) makes the scan below
+# break at i=0, yielding N_actual=0 and a downstream crash on the empty date
+# range. cam.h0 files are always present in every configuration, so a missing
+# atm file is a genuine path/naming error; cice/clm may legitimately not exist,
+# in which case we tell the user to drop that component and stop cleanly.
+_first_month = f"{START_YEAR:04d}-01"
+_missing = []
+if do_atm and not os.path.isfile(f"{root_atm}/{case_id}{prefixA}{_first_month}.nc"):
+    _missing.append(("atmosphere (--cam)", f"{root_atm}/{case_id}{prefixA}{_first_month}.nc"))
+if do_ice and not os.path.isfile(f"{root_ice}/{case_id}{prefixI}{_first_month}.nc"):
+    _missing.append(("sea ice (--cice)", f"{root_ice}/{case_id}{prefixI}{_first_month}.nc"))
+if do_lnd and not os.path.isfile(f"{root_lnd}/{case_id}{prefixL}{_first_month}.nc"):
+    _missing.append(("land (--clm)", f"{root_lnd}/{case_id}{prefixL}{_first_month}.nc"))
+if _missing:
+    print("ERROR: requested component(s) have no data at the start year:")
+    for label, path in _missing:
+        print(f"  {label}: not found\n    {path}")
+    print("Nothing was written. If this boundary condition has no such")
+    print("component, rerun without that flag (cam data always exists; cice")
+    print("and clm may legitimately be absent).")
+    quit()
+
 firstDate = None
 lastDate  = None
 i = 0
