@@ -65,26 +65,39 @@ def read_monthly_files(root_path, case_id, prefix, varnames,
     means for each variable at each timestep.
 
     Files are matched by glob and filtered to YYYY-MM date stamps, then
-    sliced to start_year and n_months so the result aligns with the file
-    scan in trend.py that determined N_actual.
+    selected by the date stamp itself (year >= start_year, keeping the first
+    n_months) so the result aligns exactly with the file scan in trend.py
+    that determined N_actual.
 
     Returns:
         out   -- numpy array, shape (n_months, len(varnames)), global means
         files -- list of file paths that were actually read
 
     Assumptions to verify against actual model output:
-      - All years from 1 to start_year-1 have exactly 12 monthly files each,
-        so start_idx = (start_year - 1) * 12 correctly skips pre-start-year files.
       - Variables are stored as (time, lat, lon); var[0, :, :] is the single
         monthly snapshot in each file.
       - weights shape (nlat, nlon) matches the spatial dims of each variable.
     """
-    date_pattern = re.compile(r'\.\d{4}-\d{2}\.nc$')
+    date_pattern = re.compile(r'\.(\d{4})-(\d{2})\.nc$')
     all_files = sorted(glob.glob(f"{root_path}/{case_id}{prefix}*.nc"))
-    all_files = [f for f in all_files if date_pattern.search(f)]
 
-    start_idx = (start_year - 1) * 12
-    files = all_files[start_idx:start_idx + n_months]
+    # Select by the actual YYYY-MM stamp rather than by position in the sorted
+    # glob. Positional slicing is fragile: any stray file that sorts ahead of
+    # start_year (e.g. a year-0000 spin-up file, or another history stream the
+    # regex still matches) shifts the window and silently drops a real month
+    # off the tail. The file scan in trend.py selects by constructing expected
+    # names, so it never sees that error; matching by date here keeps the two
+    # phases in agreement.
+    files = []
+    for f in all_files:
+        m = date_pattern.search(f)
+        if m is None:
+            continue
+        if int(m.group(1)) < start_year:
+            continue
+        files.append(f)
+        if len(files) == n_months:
+            break
 
     out = np.zeros((len(files), len(varnames)), dtype=float)
 
