@@ -33,6 +33,9 @@
 #   --nmonths N        number of months to integrate           (default 1800 = 150 yr)
 #   --int1 N           short running-mean window, years        (default 1)
 #   --int2 N           long running-mean window, years         (default 10)
+#   --cam              read atmosphere (cam.h0) — enables explicit component mode
+#   --cice             read sea ice (cice.h)   — enables explicit component mode
+#   --clm              read land (clm2.h0)     — enables explicit component mode
 #   --case-file FILE   read case IDs from FILE (one per line, # comments ok)
 #   --outdir DIR       collect the produced .txt into DIR (copied from data/)
 #   --trend-dir DIR    path to the exocam-trend checkout       (default: script dir)
@@ -41,9 +44,16 @@
 #   --dry-run          print each trend.py command without running it
 #   -h, --help         this help
 #
-# Example (the intended Tier-0 generation run):
-#   ./run_trend_batch.sh --case-file cold15.txt --nmonths 1800 \
-#       --int1 1 --int2 10 --outdir ~/tier0_series
+# Components: with no --cam/--cice/--clm given, all three are read (the old
+# default). Passing ANY of them switches to explicit mode — only the named
+# components are read. Use this for cases missing a component: a run with no
+# land model takes "--cam --cice", so trend.py never looks for clm2.h0 files
+# that do not exist (a missing component makes the file scan find 0 timesteps
+# and trend.py then errors on the empty date range).
+#
+# Example (Tier-0 generation, aquaplanet cases with no land model):
+#   ./run_trend_batch.sh --case-file cold15.txt --cam --cice --nmonths 1800 \
+#       --int1 1 --int2 10 --outdir data/tier0_series
 #
 # Notes on --int1/--int2 (they matter for the hindcast, see below):
 #   int1/int2 are running-mean windows exocam-trend writes as the _int1/_int2
@@ -71,6 +81,17 @@ CHECK=0
 DRY_RUN=0
 CASES=()
 
+# Component selection. Passing any of --cam/--cice/--clm switches from the
+# default (all three) to an explicit set: only the components you name are
+# read. Cases without a land model, for instance, take "--cam --cice" so
+# trend.py never scans for the clm2.h0 files that do not exist (a missing
+# component file makes the scan find 0 timesteps and trend.py then crashes on
+# the empty date range).
+COMP_CAM=""
+COMP_CICE=""
+COMP_CLM=""
+COMP_EXPLICIT=0
+
 # ---- arg parsing ----------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -82,13 +103,30 @@ while [[ $# -gt 0 ]]; do
     --outdir)     OUTDIR="$2";     shift 2 ;;
     --trend-dir)  TREND_DIR="$2";  shift 2 ;;
     --python)     PYTHON="$2";     shift 2 ;;
+    --cam)        COMP_CAM="--cam";   COMP_EXPLICIT=1; shift ;;
+    --cice)       COMP_CICE="--cice"; COMP_EXPLICIT=1; shift ;;
+    --clm)        COMP_CLM="--clm";   COMP_EXPLICIT=1; shift ;;
     --check)      CHECK=1;         shift ;;
     --dry-run)    DRY_RUN=1;       shift ;;
-    -h|--help)    sed -n '2,60p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)    sed -n '2,72p' "${BASH_SOURCE[0]}"; exit 0 ;;
     --*)          echo "unknown option: $1" >&2; exit 2 ;;
     *)            CASES+=("$1");   shift ;;
   esac
 done
+
+# Default to all three components; any explicit --cam/--cice/--clm narrows it.
+if [[ "$COMP_EXPLICIT" -eq 0 ]]; then
+  COMP_CAM="--cam"; COMP_CICE="--cice"; COMP_CLM="--clm"
+fi
+COMPONENTS=()
+SUFFIXES=()   # output-file suffixes trend.py writes per selected component
+[[ -n "$COMP_CAM" ]]  && { COMPONENTS+=("$COMP_CAM");  SUFFIXES+=("cam"); }
+[[ -n "$COMP_CICE" ]] && { COMPONENTS+=("$COMP_CICE"); SUFFIXES+=("cice"); }
+[[ -n "$COMP_CLM" ]]  && { COMPONENTS+=("$COMP_CLM");  SUFFIXES+=("clm"); }
+if [[ ${#COMPONENTS[@]} -eq 0 ]]; then
+  echo "no components selected (need at least one of --cam/--cice/--clm)" >&2
+  exit 2
+fi
 
 # case IDs from a file, if given (skip blank lines and # comments)
 if [[ -n "$CASE_FILE" ]]; then
@@ -122,7 +160,7 @@ echo "  start year  : $START_YEAR"
 echo "  nmonths     : $NMONTHS  ($(python3 -c "print(f'{$NMONTHS/12:.1f}')") yr)"
 echo "  int1/int2   : $INT1 / $INT2  (years)"
 echo "  cadence     : -p 1 (monthly)"
-echo "  components  : --cam --cice --clm"
+echo "  components  : ${COMPONENTS[*]}"
 echo "  cases       : ${#CASES[@]}"
 printf '                %s\n' "${CASES[@]}"
 [[ -n "$OUTDIR" ]] && echo "  collect ->  : $OUTDIR"
@@ -152,7 +190,7 @@ for case_id in "${CASES[@]}"; do
   cmd=("$PYTHON" "$TREND_PY" "$case_id"
        -y "$START_YEAR" -n "$NMONTHS" -p 1
        --int1 "$INT1" --int2 "$INT2"
-       --cam --cice --clm --save-data)
+       "${COMPONENTS[@]}" --save-data)
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     printf '  '; printf '%q ' "${cmd[@]}"; echo
@@ -161,9 +199,12 @@ for case_id in "${CASES[@]}"; do
 
   if "${cmd[@]}"; then
     if [[ -n "$OUTDIR" ]]; then
-      # collect the three files this case just produced into OUTDIR
+      # collect the files this case just produced (one per selected component)
       shopt -s nullglob
-      produced=(data/"${case_id}"_*_{cam,cice,clm}.txt)
+      produced=()
+      for suffix in "${SUFFIXES[@]}"; do
+        produced+=(data/"${case_id}"_*_"${suffix}".txt)
+      done
       shopt -u nullglob
       if [[ ${#produced[@]} -gt 0 ]]; then
         cp -v "${produced[@]}" "$OUTDIR"/
