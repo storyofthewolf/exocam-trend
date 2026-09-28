@@ -279,9 +279,10 @@ def print2text(atmvars_in, lndvars_in, icevars_in, atmprint_in, lndprint_in, ice
 
     def _write_component(outfile, time_vec, vavg_vec, intavg1_vec, intavg2_vec,
                          vars_in, print_in, offset, nvtot):
-        a  = np.where(time_vec != 0)
-        a  = np.squeeze(a)
-        na = len(a) - 1
+        # Indices (row positions in vavg_vec/time_vec) that hold real data.
+        # time_vec[k] == k+1 (1-based month number) for every filled row, so
+        # this also gives, in order, every valid row index 0..N_actual-1.
+        valid = np.where(time_vec != 0)[0]
 
         # build ordered list of (label, col_index) pairs matching print_in order
         cols = []
@@ -300,15 +301,20 @@ def print2text(atmvars_in, lndvars_in, icevars_in, atmprint_in, lndprint_in, ice
             for label, _ in cols:
                 header += "  {}_native  {}_int1  {}_int2".format(label, label, label)
             print(header, file=f)
-            # data rows
-            for i in time_vec[0:na]:
-                i = int(i)
+            # data rows -- k is the row index into vavg_vec (0-based); the
+            # 1-based month number used for the label comes from time_vec[k].
+            # Using time_vec[k] itself as the row index (the previous
+            # behavior) shifted every row's data by one month relative to
+            # its label and, combined with the off-by-one slice below,
+            # silently dropped the first month and mislabeled the last.
+            for k in valid:
+                i = int(time_vec[k])
                 row = str(i)
                 for label, xi in cols:
                     row += "  {}  {}  {}".format(
-                        fmt.format(vavg_vec[i, xi]),
-                        fmt.format(intavg1_vec[i, xi]),
-                        fmt.format(intavg2_vec[i, xi]))
+                        fmt.format(vavg_vec[k, xi]),
+                        fmt.format(intavg1_vec[k, xi]),
+                        fmt.format(intavg2_vec[k, xi]))
                 print(row, file=f)
 
     if do_atm:
