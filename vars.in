@@ -26,5 +26,8 @@ TG
 # interest are 2D (surface temperature, TOA energy balance, etc). I will 
 # eventually add option for read in full 3D variables when the utility
 # is requested or becomes self-evident.
+#
+# 3D cam.h0 fields are not listed here: pass them to trend.py with
+# --profile (e.g. --profile T,Q) for per-level global means on model levels.
 
 

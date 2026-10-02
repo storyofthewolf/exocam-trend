@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python trend.py <case_id> --cam [--cice] [--clm] \
     [-y START_YEAR] [-n N_MONTHS] [-p PRINT_INTERVAL] [-a AVG_FREQ] \
     [--int1 YEARS] [--int2 YEARS] \
-    [--plots] [--data] [--timing] \
+    [--plots] [--save-data] [--timing] [--profile VARS] \
     [--rundir] [--testdir PATH]
 ```
 
@@ -47,7 +47,8 @@ The hardcoded base directory `dir` near the top of `trend.py` must point to the 
 | `--rundir` | off | Read from run directory instead of archive |
 | `--testdir PATH` | off | Read all components from a flat directory (local testing) |
 | `--plots` | off | Generate time-series line plots after processing |
-| `--data` | off | Write global mean time series to text files in `data/` |
+| `--save-data` | off | Write global mean time series to text files in `data/` |
+| `--profile VARS` | (none) | Comma-separated 3D `cam.h0` fields: per-level global means on model levels, written with `--save-data` to `data/<case>_<first>-<last>_camlev_<VAR>.txt` plus `..._camlev_PMID.txt` (needs `--cam`) |
 | `--timing` | off | Print wall-clock timing summary at end of run |
 
 At least one of `--cam`, `--cice`, or `--clm` must be specified.
@@ -90,7 +91,9 @@ In `--testdir` mode, files must still follow CAM naming conventions (`case_id.ca
 
 - `build_area_weights(lon, lat)` — staggered-grid normalized area weights, shape `(nlat, nlon)`, called once at startup. Cell edges are midpoints between adjacent lat values, with ±90° at the poles. Assumes a regular longitude grid (uniform `dlon`).
 - `global_mean_2d(var2d, weights)` — area-weighted mean of a single 2D field via `np.ma.average`; masked cells (including -999.0 sentinels) are excluded from both numerator and denominator. Returns `np.nan` if the entire field is masked.
-- `read_monthly_files(root_path, case_id, prefix, varnames, start_year, n_months, weights)` — globs and date-filters all matching files (regex `\.\d{4}-\d{2}\.nc$`), slices to `start_year` and `n_months`, reads each file with netCDF4, calls `global_mean_2d` per variable, and returns a `(n_months, len(varnames))` numpy array plus the file list. Progress shown via `tqdm`. Missing variables store `np.nan` and are warned once per `(prefix, varname)` pair via the module-level `_warned_missing` set.
+- `global_mean_profile(var3d, weights)` — `global_mean_2d` on each model level of a `(nlev, nlat, nlon)` field; no vertical interpolation.
+- `read_monthly_fields(..., profile_vars=())` — the one-pass reader behind `read_monthly_files`: also returns `profiles`, `{VAR: (n_months, nlev)}` per profile field plus `PMID = hyam*P0 + hybm*<PS>` (Pa). Raises if a profile field, `PS`, `hyam`, `hybm` or `P0` is missing, or a profile field is not `(time, lev, lat, lon)`.
+- `read_monthly_files(root_path, case_id, prefix, varnames, start_year, n_months, weights)` — 2D-only wrapper of `read_monthly_fields`; globs and date-filters all matching files (regex `\.\d{4}-\d{2}\.nc$`), slices to `start_year` and `n_months`, reads each file with netCDF4, calls `global_mean_2d` per variable, and returns a `(n_months, len(varnames))` numpy array plus the file list. Progress shown via `tqdm`. Missing variables store `np.nan` and are warned once per `(prefix, varname)` pair via the module-level `_warned_missing` set.
 - `compute_running_means(vavg_vec, int1, int2)` — O(N) causal rolling mean via cumsum; returns `(intavg1, intavg2, slope1, slope2)`. Before the window is full, the mean is taken over all available data and slope is computed relative to the first value. Slopes are in units per year.
 
 **`trend_utils.py`** — parsing, output, and plotting functions:
@@ -99,7 +102,8 @@ In `--testdir` mode, files must still follow CAM naming conventions (`case_id.ca
 - `print2screen()` — tabular running output; `-a` flag selects which average is shown (0=monthly, 1=short-window, 2=long-window). The `print_offset` variable maps `avgfreq` to the correct column index within the packed `atmout` array.
 - `atm_energy_calc()` — derives `etop = FSNT - FLNT` and `ebot = FSNS - FLNS - LHFLX - SHFLX`. Requires those six variables in the atmosphere read list.
 - `timeSeriesPlots()` — renders matplotlib line plots per requested variable, showing monthly, short-window, and long-window averages. Ice/land plotting branches are not yet implemented.
-- `print2text()` — writes `data/<case_id>_<firstDate>-<lastDate>_cam.txt`; partially implemented — writes only the first atmosphere variable (hardcoded column index 4). The ice branch has a bug (writes `vavg_vecI[i,4]` which is wrong for most ice configurations).
+- `print2text()` — writes `data/<case_id>_<firstDate>-<lastDate>_{cam,cice,clm}.txt`, `month` then `VAR_native VAR_int1 VAR_int2` per print variable.
+- `print_profiles2text()` — writes `data/<case_id>_<firstDate>-<lastDate>_camlev_<VAR>.txt` per profile field (and `PMID`): `month L01 … Lnn`, native monthly means only, `L01` = model top.
 - `print_final_summary()` — prints a formatted table of final-timestep values and running averages for all active components; always called at the end of `trend.py` regardless of `-p`.
 
 **`vars.in`** — plain-text namelist with three blocks (read / print / plot), each with one line per component model (atm, ice, lnd). Comment lines beginning with `#` after the data blocks are ignored. The special token `energy` in print/plot blocks triggers `atm_energy_calc` rather than a direct variable lookup.
@@ -127,7 +131,7 @@ Years are zero-padded to 4 digits (e.g., `0010`).
 ## Constraints and assumptions
 
 - **Monthly cadence only.** Only `nhtfrq=0` (monthly mean) output is supported. Sub-monthly or annual history files will not work.
-- **2D variables only.** `read_monthly_files` reads `var[0, :, :]` — the first time index, all lats and lons. 3D variables (e.g., pressure-level fields) are not yet supported.
+- **2D variables in `vars.in`; 3D only via `--profile`.** `vars.in` fields are read as `var[0, :, :]`. 3D `cam.h0` fields are reduced per model level through `--profile` (never interpolated to pressure surfaces); they have no running means, screen output or plots.
 - **Regular lon grid.** `build_area_weights` assumes uniform longitude spacing; the first `dlon` value is used for all cells.
 - **Grid consistency.** All files in a run are assumed to share the same `(nlat, nlon)` grid as the first file peeked at startup. No checking is done.
 - **No partial years before START_YEAR.** The glob-slice offset assumes complete 12-file years prior to the start year.

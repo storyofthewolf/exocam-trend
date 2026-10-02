@@ -340,6 +340,32 @@ def print2text(atmvars_in, lndvars_in, icevars_in, atmprint_in, lndprint_in, ice
 
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# // print_profiles2text //
+# writes per-level global-mean time series of 3D fields
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def print_profiles2text(profiles, firstDate, lastDate, case_id, outdir="data"):
+    """
+    Write one file per profile variable (and PMID, the mean level pressure):
+        <outdir>/<case_id>_<firstDate>-<lastDate>_camlev_<VAR>.txt
+    Header: month  L01 ... Lnn  (model levels, L01 = model top; no vertical
+    interpolation). One row per month, native monthly global means only --
+    no running means, so the consumer chooses its own averaging window.
+    Returns the list of files written.
+    """
+    written = []
+    for name, arr in profiles.items():
+        n_months, nlev = arr.shape
+        outfile = f"{outdir}/{case_id}_{firstDate}-{lastDate}_camlev_{name}.txt"
+        with open(outfile, "w") as f:
+            print("month  " + "  ".join(f"L{k + 1:02d}" for k in range(nlev)), file=f)
+            for i in range(n_months):
+                print(str(i + 1) + "  " + "  ".join(f"{v:.7g}" for v in arr[i]), file=f)
+        print("  Data written to {}".format(outfile))
+        written.append(outfile)
+    return written
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # // timeSeriesPlots //
 # makes time-series plots at runtime
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

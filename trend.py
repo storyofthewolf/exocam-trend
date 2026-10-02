@@ -49,6 +49,7 @@ parser.add_argument('--save-data',  action='store_true', dest='save_data', help=
 parser.add_argument('--timing',     action='store_true', help='print wall-clock timing summary at end of run')
 parser.add_argument('--int1',       type=int, default=1,  help='Short averaging window in years (default: 1)')
 parser.add_argument('--int2',       type=int, default=10, help='Long averaging window in years (default: 10)')
+parser.add_argument('--profile',    type=str, default='', help='comma-separated 3D cam.h0 fields (e.g. T,Q): write per-level global-mean monthly series on model levels, plus PMID (needs --cam; written with --save-data)')
 args = parser.parse_args()
 
 # define case
@@ -58,6 +59,12 @@ NT          = int(args.n)
 
 # averaging interval for output
 avgfreq     = int(args.a)
+
+# 3D fields reduced to per-level global means
+profile_vars = [v.strip() for v in args.profile.split(',') if v.strip()]
+if profile_vars and not args.cam:
+    print("--profile needs --cam (the profile fields are read from cam.h0)")
+    quit()
 
 read_rundir   = False
 if args.rundir:  read_rundir = args.rundir
@@ -363,9 +370,9 @@ weights = core.build_area_weights(lon, lat)
 
 if do_atm == True:
     t0 = time.time()
-    gm_atm, files_atm = core.read_monthly_files(root_atm, case_id, prefixA,
-                                                 list(atmvars_in), START_YEAR,
-                                                 N_actual, weights)
+    gm_atm, profiles_atm, files_atm = core.read_monthly_fields(
+        root_atm, case_id, prefixA, list(atmvars_in), START_YEAR, N_actual,
+        weights, profile_vars)
     timing['read and average (atm)'] = time.time() - t0
     print(f"  found {len(files_atm)} files")
     #print_timing('read and average (atm)', timing['read and average (atm)'])
@@ -488,6 +495,8 @@ if args.save_data == True:
                    do_ice, vnamesI, time_vecI, vavg_vecI, intavg1_vecI, intavg2_vecI, slope_intavg1_vecI, slope_intavg2_vecI, \
                    do_lnd, vnamesL, time_vecL, vavg_vecL, intavg1_vecL, intavg2_vecL, slope_intavg1_vecL, slope_intavg2_vecL, \
                    firstDate, lastDate, case_id)
+  if do_atm == True and profile_vars:
+    trend.print_profiles2text(profiles_atm, firstDate, lastDate, case_id)
 
 #------------------------------------------------------
 # Call line plotting script

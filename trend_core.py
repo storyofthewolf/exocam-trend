@@ -58,36 +58,32 @@ def global_mean_2d(var2d, weights):
     return float(np.ma.average(ma, weights=weights))
 
 
-def read_monthly_files(root_path, case_id, prefix, varnames,
-                       start_year, n_months, weights):
+def global_mean_profile(var3d, weights):
     """
-    Read monthly netCDF files sequentially and compute area-weighted global
-    means for each variable at each timestep.
+    Area-weighted global mean of each model level of a 3D field.
+    var3d has shape (nlev, nlat, nlon); returns a (nlev,) array, one
+    global_mean_2d per level, so masking behaves exactly as for 2D fields.
+    No vertical interpolation: level k is model level k (top first).
+    """
+    return np.array([global_mean_2d(var3d[k], weights)
+                     for k in range(var3d.shape[0])], dtype=float)
 
-    Files are matched by glob and filtered to YYYY-MM date stamps, then
-    selected by the date stamp itself (year >= start_year, keeping the first
-    n_months) so the result aligns exactly with the file scan in trend.py
-    that determined N_actual.
 
-    Returns:
-        out   -- numpy array, shape (n_months, len(varnames)), global means
-        files -- list of file paths that were actually read
+def select_monthly_files(root_path, case_id, prefix, start_year, n_months):
+    """
+    Monthly files for a case, selected by their YYYY-MM stamp: year >=
+    start_year, keeping the first n_months.
 
-    Assumptions to verify against actual model output:
-      - Variables are stored as (time, lat, lon); var[0, :, :] is the single
-        monthly snapshot in each file.
-      - weights shape (nlat, nlon) matches the spatial dims of each variable.
+    Select by the actual YYYY-MM stamp rather than by position in the sorted
+    glob. Positional slicing is fragile: any stray file that sorts ahead of
+    start_year (e.g. a year-0000 spin-up file, or another history stream the
+    regex still matches) shifts the window and silently drops a real month
+    off the tail. The file scan in trend.py selects by constructing expected
+    names, so it never sees that error; matching by date here keeps the two
+    phases in agreement.
     """
     date_pattern = re.compile(r'\.(\d{4})-(\d{2})\.nc$')
     all_files = sorted(glob.glob(f"{root_path}/{case_id}{prefix}*.nc"))
-
-    # Select by the actual YYYY-MM stamp rather than by position in the sorted
-    # glob. Positional slicing is fragile: any stray file that sorts ahead of
-    # start_year (e.g. a year-0000 spin-up file, or another history stream the
-    # regex still matches) shifts the window and silently drops a real month
-    # off the tail. The file scan in trend.py selects by constructing expected
-    # names, so it never sees that error; matching by date here keeps the two
-    # phases in agreement.
     files = []
     for f in all_files:
         m = date_pattern.search(f)
@@ -98,26 +94,88 @@ def read_monthly_files(root_path, case_id, prefix, varnames,
         files.append(f)
         if len(files) == n_months:
             break
+    return files
+
+
+def read_monthly_fields(root_path, case_id, prefix, varnames,
+                        start_year, n_months, weights, profile_vars=()):
+    """
+    Read monthly netCDF files sequentially, in one pass, and compute
+    area-weighted global means: of each 2D variable in varnames, and of each
+    model level of each 3D variable in profile_vars.
+
+    Returns:
+        out      -- numpy array, shape (n_months, len(varnames)), global means
+        profiles -- dict {name: (n_months, nlev) array} for each profile
+                    variable, plus 'PMID' (the mean pressure of each model
+                    level, Pa: hyam*P0 + hybm*<PS>, with <PS> the area-weighted
+                    global-mean surface pressure) when profile_vars is given;
+                    {} otherwise
+        files    -- list of file paths that were actually read
+
+    Assumptions to verify against actual model output:
+      - 2D variables are stored as (time, lat, lon) and 3D ones as
+        (time, lev, lat, lon); index 0 is the single monthly snapshot.
+      - weights shape (nlat, nlon) matches the spatial dims of each variable.
+      - profile files carry hyam, hybm, P0 and PS (standard cam.h0 output).
+    """
+    files = select_monthly_files(root_path, case_id, prefix, start_year, n_months)
 
     out = np.zeros((len(files), len(varnames)), dtype=float)
+    profiles = {}
 
-    for i, filepath in tqdm(enumerate(files), total=len(files), 
+    for i, filepath in tqdm(enumerate(files), total=len(files),
                         desc="reading files", unit="file"):
-    #for i, filepath in enumerate(files):
-        ncid = nc.Dataset(filepath, 'r')
-        for j, vname in enumerate(varnames):
-            if vname in ncid.variables:
-                raw = ncid.variables[vname][0, :, :]
-                masked = np.ma.masked_equal(raw, -999.0)
-                out[i, j] = global_mean_2d(masked, weights)
-            else:
-                key = (prefix, vname)
-                if key not in _warned_missing:
-                    print(f"  WARNING: variable '{vname}' not found in {os.path.basename(filepath)}, storing NaN")
-                    _warned_missing.add(key)
-                out[i, j] = np.nan
-        ncid.close()
+        with nc.Dataset(filepath, 'r') as ncid:
+            for j, vname in enumerate(varnames):
+                if vname in ncid.variables:
+                    raw = ncid.variables[vname][0, :, :]
+                    masked = np.ma.masked_equal(raw, -999.0)
+                    out[i, j] = global_mean_2d(masked, weights)
+                else:
+                    key = (prefix, vname)
+                    if key not in _warned_missing:
+                        print(f"  WARNING: variable '{vname}' not found in {os.path.basename(filepath)}, storing NaN")
+                        _warned_missing.add(key)
+                    out[i, j] = np.nan
+            if profile_vars:
+                for name in list(profile_vars) + ['PS', 'hyam', 'hybm', 'P0']:
+                    if name not in ncid.variables:
+                        raise KeyError(f"profile variable '{name}' not found in "
+                                       f"{os.path.basename(filepath)}")
+                for vname in profile_vars:
+                    var = ncid.variables[vname]
+                    if var.ndim != 4:
+                        raise ValueError(f"profile variable '{vname}' is not 3D "
+                                         f"(time, lev, lat, lon): dims {var.dimensions}")
+                    raw = np.ma.masked_equal(var[0, :, :, :], -999.0)
+                    prof = global_mean_profile(raw, weights)
+                    if vname not in profiles:
+                        profiles[vname] = np.full((len(files), prof.size), np.nan)
+                    profiles[vname][i] = prof
+                ps = global_mean_2d(np.ma.masked_equal(ncid.variables['PS'][0, :, :], -999.0),
+                                    weights)
+                hyam = np.asarray(ncid.variables['hyam'][:], dtype=float)
+                hybm = np.asarray(ncid.variables['hybm'][:], dtype=float)
+                p0 = float(np.asarray(ncid.variables['P0'][...]))
+                if 'PMID' not in profiles:
+                    profiles['PMID'] = np.full((len(files), hyam.size), np.nan)
+                profiles['PMID'][i] = hyam * p0 + hybm * ps
 
+    return out, profiles, files
+
+
+def read_monthly_files(root_path, case_id, prefix, varnames,
+                       start_year, n_months, weights):
+    """
+    Area-weighted global means of 2D variables only; see read_monthly_fields.
+
+    Returns:
+        out   -- numpy array, shape (n_months, len(varnames)), global means
+        files -- list of file paths that were actually read
+    """
+    out, _, files = read_monthly_fields(root_path, case_id, prefix, varnames,
+                                        start_year, n_months, weights)
     return out, files
 
 

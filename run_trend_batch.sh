@@ -37,7 +37,11 @@
 #   --cice             read sea ice (cice.h)   — enables explicit component mode
 #   --clm              read land (clm2.h0)     — enables explicit component mode
 #   --case-file FILE   read case IDs from FILE (one per line, # comments ok)
-#   --outdir DIR       collect the produced .txt into DIR (copied from data/)
+#   --profile VARS     comma-separated 3D cam.h0 fields (e.g. T,Q): also write
+#                      per-level global-mean series on model levels, one file
+#                      per field plus PMID: data/<case>_<first>-<last>_camlev_<VAR>.txt
+#   --outdir DIR       collect the .txt files THIS run produced into DIR (copied
+#                      from data/; older series of the same case are left behind)
 #   --trend-dir DIR    path to the exocam-trend checkout       (default: script dir)
 #   --python BIN       python interpreter to use               (default: python3)
 #   --check            print the resolved plan and vars.in, then exit
@@ -74,6 +78,7 @@ INT1=1
 INT2=10
 CASE_FILE=""
 OUTDIR=""
+PROFILE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TREND_DIR="$SCRIPT_DIR"
 PYTHON="python3"
@@ -101,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --int2)       INT2="$2";       shift 2 ;;
     --case-file)  CASE_FILE="$2";  shift 2 ;;
     --outdir)     OUTDIR="$2";     shift 2 ;;
+    --profile)    PROFILE="$2";    shift 2 ;;
     --trend-dir)  TREND_DIR="$2";  shift 2 ;;
     --python)     PYTHON="$2";     shift 2 ;;
     --cam)        COMP_CAM="--cam";   COMP_EXPLICIT=1; shift ;;
@@ -108,7 +114,7 @@ while [[ $# -gt 0 ]]; do
     --clm)        COMP_CLM="--clm";   COMP_EXPLICIT=1; shift ;;
     --check)      CHECK=1;         shift ;;
     --dry-run)    DRY_RUN=1;       shift ;;
-    -h|--help)    sed -n '2,72p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)    sed -n '2,71p' "${BASH_SOURCE[0]}"; exit 0 ;;
     --*)          echo "unknown option: $1" >&2; exit 2 ;;
     *)            CASES+=("$1");   shift ;;
   esac
@@ -161,6 +167,7 @@ echo "  nmonths     : $NMONTHS  ($(python3 -c "print(f'{$NMONTHS/12:.1f}')") yr)
 echo "  int1/int2   : $INT1 / $INT2  (years)"
 echo "  cadence     : -p 1 (monthly)"
 echo "  components  : ${COMPONENTS[*]}"
+[[ -n "$PROFILE" ]] && echo "  profiles    : $PROFILE  (per model level)"
 echo "  cases       : ${#CASES[@]}"
 printf '                %s\n' "${CASES[@]}"
 [[ -n "$OUTDIR" ]] && echo "  collect ->  : $OUTDIR"
@@ -191,19 +198,31 @@ for case_id in "${CASES[@]}"; do
        -y "$START_YEAR" -n "$NMONTHS" -p 1
        --int1 "$INT1" --int2 "$INT2"
        "${COMPONENTS[@]}" --save-data)
+  [[ -n "$PROFILE" ]] && cmd+=(--profile "$PROFILE")
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     printf '  '; printf '%q ' "${cmd[@]}"; echo
     continue
   fi
 
+  # Marker for "written by this run": data/ keeps every earlier series of the
+  # case (other spans), and consumers merge all of a case's files in a
+  # directory, so only files newer than this marker are collected.
+  marker="data/.collect-marker.$$"
+  touch "$marker"
   if "${cmd[@]}"; then
     if [[ -n "$OUTDIR" ]]; then
-      # collect the files this case just produced (one per selected component)
+      # collect the files this case just produced (one per selected component,
+      # plus one per profile field)
       shopt -s nullglob
       produced=()
-      for suffix in "${SUFFIXES[@]}"; do
-        produced+=(data/"${case_id}"_*_"${suffix}".txt)
+      for f in data/"${case_id}"_*.txt; do
+        [[ "$f" -nt "$marker" ]] || continue
+        for suffix in "${SUFFIXES[@]}"; do
+          if [[ "$f" == *_"${suffix}".txt || ( "$suffix" == cam && "$f" == *_camlev_*.txt ) ]]; then
+            produced+=("$f"); break
+          fi
+        done
       done
       shopt -u nullglob
       if [[ ${#produced[@]} -gt 0 ]]; then
@@ -216,6 +235,7 @@ for case_id in "${CASES[@]}"; do
     echo "  FAILED: $case_id" >&2
     failed+=("$case_id")
   fi
+  rm -f "$marker"
 done
 
 echo
