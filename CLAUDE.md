@@ -18,6 +18,7 @@ python trend.py <case_id> --cam [--cice] [--clm] \
     [-y START_YEAR] [-n N_MONTHS] [-p PRINT_INTERVAL] [-a AVG_FREQ] \
     [--int1 YEARS] [--int2 YEARS] \
     [--plots] [--save-data] [--timing] [--profile VARS] \
+    [--cache-dir PATH] [--no-cache] \
     [--rundir] [--testdir PATH]
 ```
 
@@ -50,6 +51,8 @@ The hardcoded base directory `dir` near the top of `trend.py` must point to the 
 | `--save-data` | off | Write global mean time series to text files in `data/` |
 | `--profile VARS` | (none) | Comma-separated 3D `cam.h0` fields: per-level global means on model levels, written with `--save-data` to `data/<case>_<first>-<last>_camlev_<VAR>.txt` plus `..._camlev_PMID.txt` (needs `--cam`) |
 | `--timing` | off | Print wall-clock timing summary at end of run |
+| `--cache-dir PATH` | `cache/` | Directory for the per-file global-mean cache |
+| `--no-cache` | off | Neither read nor write the cache (always re-read every file) |
 
 At least one of `--cam`, `--cice`, or `--clm` must be specified.
 
@@ -74,6 +77,8 @@ In `--testdir` mode, files must still follow CAM naming conventions (`case_id.ca
 | `trend_utils.py` | `vars.in` parsing, screen/text output, time-series plotting, final summary |
 | `vars.in` | Variable namelist: which fields to read, print, and plot for each component model |
 | `data/` | Output directory for text files (must exist; not auto-created) |
+| `cache/` | Per-file global-mean cache, one `.jsonl` per case and component (auto-created, gitignored) |
+| `test_cache.py` | Tests for the per-file cache |
 | `plots/` | Output directory for plot files (must exist; not auto-created) |
 
 ## Architecture
@@ -92,7 +97,7 @@ In `--testdir` mode, files must still follow CAM naming conventions (`case_id.ca
 - `build_area_weights(lon, lat)` — staggered-grid normalized area weights, shape `(nlat, nlon)`, called once at startup. Cell edges are midpoints between adjacent lat values, with ±90° at the poles. Assumes a regular longitude grid (uniform `dlon`).
 - `global_mean_2d(var2d, weights)` — area-weighted mean of a single 2D field via `np.ma.average`; masked cells (including -999.0 sentinels) are excluded from both numerator and denominator. Returns `np.nan` if the entire field is masked.
 - `global_mean_profile(var3d, weights)` — `global_mean_2d` on each model level of a `(nlev, nlat, nlon)` field; no vertical interpolation.
-- `read_monthly_fields(..., profile_vars=())` — the one-pass reader behind `read_monthly_files`: also returns `profiles`, `{VAR: (n_months, nlev)}` per profile field plus `PMID = hyam*P0 + hybm*<PS>` (Pa). Raises if a profile field, `PS`, `hyam`, `hybm` or `P0` is missing, or a profile field is not `(time, lev, lat, lon)`.
+- `read_monthly_fields(..., profile_vars=())` — the one-pass reader behind `read_monthly_files`: also returns `profiles`, `{VAR: (n_months, nlev)}` per profile field plus `PMID = hyam*P0 + hybm*<PS>` (Pa). Raises if a profile field, `PS`, `hyam`, `hybm` or `P0` is missing, or a profile field is not `(time, lev, lat, lon)`. With `cache_path`, appends each file's means to that JSON-lines cache as it goes and skips files already fully cached; see `load_cache` and "Per-file cache" below.
 - `read_monthly_files(root_path, case_id, prefix, varnames, start_year, n_months, weights)` — 2D-only wrapper of `read_monthly_fields`; globs and date-filters all matching files (regex `\.\d{4}-\d{2}\.nc$`), slices to `start_year` and `n_months`, reads each file with netCDF4, calls `global_mean_2d` per variable, and returns a `(n_months, len(varnames))` numpy array plus the file list. Progress shown via `tqdm`. Missing variables store `np.nan` and are warned once per `(prefix, varname)` pair via the module-level `_warned_missing` set.
 - `compute_running_means(vavg_vec, int1, int2)` — O(N) causal rolling mean via cumsum; returns `(intavg1, intavg2, slope1, slope2)`. Before the window is full, the mean is taken over all available data and slope is computed relative to the first value. Slopes are in units per year.
 
@@ -107,6 +112,12 @@ In `--testdir` mode, files must still follow CAM naming conventions (`case_id.ca
 - `print_final_summary()` — prints a formatted table of final-timestep values and running averages for all active components; always called at the end of `trend.py` regardless of `-p`.
 
 **`vars.in`** — plain-text namelist with three blocks (read / print / plot), each with one line per component model (atm, ice, lnd). Comment lines beginning with `#` after the data blocks are ignored. The special token `energy` in print/plot blocks triggers `atm_energy_calc` rather than a direct variable lookup.
+
+## Per-file cache
+
+Each file's global means are appended to `cache/<case_id>.cam.h0.jsonl` (and `.cice.h`, `.clm2.h0`) as soon as the file is read, and a later run skips any file whose requested values are already cached. A run killed partway, by a login-node watchdog or a wall-clock limit, loses at most the file it was reading; the rerun picks up where it stopped. Extending a time series reads only the new months, and adding a variable to `vars.in` reads each file once more for that variable alone.
+
+A cached value is reused only while the history file's size and mtime, the area weights, and `CACHE_VERSION` in `trend_core.py` all match, so a rewritten file or a changed grid is read again. Bump `CACHE_VERSION` whenever the per-file reduction changes (masking, weighting, the PMID formula). The cache is append-only JSON lines, later records winning; a partial last line from a killed run is skipped. Moving files from the run directory to the archive keeps size and mtime, so the cache carries over. `--no-cache` bypasses it; to rebuild, move the case's `.jsonl` aside.
 
 ## Array indexing conventions
 

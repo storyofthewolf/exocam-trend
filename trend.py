@@ -47,6 +47,8 @@ parser.add_argument('--plots',      action='store_true', help='do lineplots at e
 parser.add_argument('--show',       action='store_true', help='display plots interactively in addition to saving')
 parser.add_argument('--save-data',  action='store_true', dest='save_data', help='write global mean time series to text files in data/')
 parser.add_argument('--timing',     action='store_true', help='print wall-clock timing summary at end of run')
+parser.add_argument('--cache-dir',  type=str, default='cache', dest='cache_dir', help='directory for the per-file global-mean cache (default: cache/)')
+parser.add_argument('--no-cache',   action='store_true', dest='no_cache', help='neither read nor write the per-file cache')
 parser.add_argument('--int1',       type=int, default=1,  help='Short averaging window in years (default: 1)')
 parser.add_argument('--int2',       type=int, default=10, help='Long averaging window in years (default: 10)')
 parser.add_argument('--profile',    type=str, default='', help='comma-separated 3D cam.h0 fields (e.g. T,Q): write per-level global-mean monthly series on model levels, plus PMID (needs --cam; written with --save-data)')
@@ -368,11 +370,17 @@ print("========================================")
 
 weights = core.build_area_weights(lon, lat)
 
+def cache_path(prefix):
+    # One append-only cache per case and component, e.g. cache/<case>.cam.h0.jsonl
+    if args.no_cache:
+        return None
+    return os.path.join(args.cache_dir, case_id + prefix.rstrip('.') + '.jsonl')
+
 if do_atm == True:
     t0 = time.time()
     gm_atm, profiles_atm, files_atm = core.read_monthly_fields(
         root_atm, case_id, prefixA, list(atmvars_in), START_YEAR, N_actual,
-        weights, profile_vars)
+        weights, profile_vars, cache_path=cache_path(prefixA))
     timing['read and average (atm)'] = time.time() - t0
     print(f"  found {len(files_atm)} files")
     #print_timing('read and average (atm)', timing['read and average (atm)'])
@@ -383,7 +391,8 @@ if do_ice == True:
     t0 = time.time()
     gm_ice, files_ice = core.read_monthly_files(root_ice, case_id, prefixI,
                                                  list(icevars_in), START_YEAR,
-                                                 N_actual, weights)
+                                                 N_actual, weights,
+                                                 cache_path=cache_path(prefixI))
     timing['read and average (ice)'] = time.time() - t0
     print(f"  found {len(files_ice)} files")
     #print_timing('read and average (ice)', timing['read and average (ice)'])
@@ -394,7 +403,8 @@ if do_lnd == True:
     t0 = time.time()
     gm_lnd, files_lnd = core.read_monthly_files(root_lnd, case_id, prefixL,
                                                  list(lndvars_in), START_YEAR,
-                                                 N_actual, weights)
+                                                 N_actual, weights,
+                                                 cache_path=cache_path(prefixL))
     timing['read and average (lnd)'] = time.time() - t0
     print(f"  found {len(files_lnd)} files")
     #print_timing('read and average (lnd)', timing['read and average (lnd)'])

@@ -11,12 +11,18 @@
 import numpy as np
 import netCDF4 as nc
 import glob
+import hashlib
+import json
 import re
 import os
 from tqdm import tqdm
 
 # Module-level set to suppress duplicate missing-variable warnings
 _warned_missing = set()
+
+# Bump when the per-file reduction changes (masking, weighting, PMID formula),
+# so every cached value computed the old way is ignored and recomputed.
+CACHE_VERSION = 1
 
 
 def build_area_weights(lon, lat):
@@ -97,12 +103,115 @@ def select_monthly_files(root_path, case_id, prefix, start_year, n_months):
     return files
 
 
+def _weights_key(weights):
+    """Short fingerprint of the area weights: a cached mean is only valid on the grid it was computed on."""
+    return hashlib.sha1(np.ascontiguousarray(weights, dtype=float).tobytes()).hexdigest()[:16]
+
+
+def _file_key(filepath):
+    st = os.stat(filepath)
+    return st.st_size, st.st_mtime_ns
+
+
+def load_cache(cache_path, wkey):
+    """
+    Per-file global means saved by earlier runs, {basename: record}.
+
+    The cache is append-only JSON lines, one record per file read. Records for
+    the same file merge in order, later values winning, so a run that adds a
+    variable appends only that variable. A record is ignored unless its
+    CACHE_VERSION and weights fingerprint match; the caller also checks the
+    file's size and mtime, so a rewritten history file is read again. A run
+    killed mid-write leaves at most one partial last line, which is skipped.
+    """
+    entries = {}
+    if cache_path is None or not os.path.exists(cache_path):
+        return entries
+    with open(cache_path) as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("version") != CACHE_VERSION or rec.get("weights") != wkey:
+                continue
+            ent = entries.get(rec["file"])
+            if ent is None or (ent["size"], ent["mtime_ns"]) != (rec["size"], rec["mtime_ns"]):
+                ent = {"size": rec["size"], "mtime_ns": rec["mtime_ns"], "vars": {}, "profiles": {}}
+                entries[rec["file"]] = ent
+            ent["vars"].update(rec.get("vars", {}))
+            ent["profiles"].update(rec.get("profiles", {}))
+    return entries
+
+
+def _open_cache_for_append(cache_path):
+    d = os.path.dirname(cache_path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    fh = open(cache_path, "a+")
+    # A killed run can leave a partial last line; start the next record on a fresh one.
+    if fh.tell() > 0:
+        fh.seek(fh.tell() - 1)
+        if fh.read(1) != "\n":
+            fh.write("\n")
+    return fh
+
+
+def _warn_missing(prefix, vname, filepath):
+    key = (prefix, vname)
+    if key not in _warned_missing:
+        print(f"  WARNING: variable '{vname}' not found in {os.path.basename(filepath)}, storing NaN")
+        _warned_missing.add(key)
+
+
+def _reduce_file(ncid, filepath, prefix, varnames, profile_vars, weights):
+    """
+    Global means for one open file: {var: float or None} for 2D fields
+    (None = absent from the file) and {var: [per-level means]} for profile
+    fields plus PMID when any are requested.
+    """
+    vals = {}
+    for vname in varnames:
+        if vname in ncid.variables:
+            raw = ncid.variables[vname][0, :, :]
+            vals[vname] = global_mean_2d(np.ma.masked_equal(raw, -999.0), weights)
+        else:
+            vals[vname] = None
+    profs = {}
+    if profile_vars:
+        for name in list(profile_vars) + ['PS', 'hyam', 'hybm', 'P0']:
+            if name not in ncid.variables:
+                raise KeyError(f"profile variable '{name}' not found in "
+                               f"{os.path.basename(filepath)}")
+        for vname in profile_vars:
+            var = ncid.variables[vname]
+            if var.ndim != 4:
+                raise ValueError(f"profile variable '{vname}' is not 3D "
+                                 f"(time, lev, lat, lon): dims {var.dimensions}")
+            raw = np.ma.masked_equal(var[0, :, :, :], -999.0)
+            profs[vname] = global_mean_profile(raw, weights).tolist()
+        ps = global_mean_2d(np.ma.masked_equal(ncid.variables['PS'][0, :, :], -999.0),
+                            weights)
+        hyam = np.asarray(ncid.variables['hyam'][:], dtype=float)
+        hybm = np.asarray(ncid.variables['hybm'][:], dtype=float)
+        p0 = float(np.asarray(ncid.variables['P0'][...]))
+        profs['PMID'] = (hyam * p0 + hybm * ps).tolist()
+    return vals, profs
+
+
 def read_monthly_fields(root_path, case_id, prefix, varnames,
-                        start_year, n_months, weights, profile_vars=()):
+                        start_year, n_months, weights, profile_vars=(),
+                        cache_path=None):
     """
     Read monthly netCDF files sequentially, in one pass, and compute
     area-weighted global means: of each 2D variable in varnames, and of each
     model level of each 3D variable in profile_vars.
+
+    With cache_path, each file's means are appended to that JSON-lines file
+    as soon as the file is read, and a file whose means are all already
+    cached (same size, mtime, weights and CACHE_VERSION) is not opened. A
+    killed run therefore loses at most the file it was on, and a rerun or a
+    longer time series reads only the files not yet seen. See load_cache.
 
     Returns:
         out      -- numpy array, shape (n_months, len(varnames)), global means
@@ -123,50 +232,65 @@ def read_monthly_fields(root_path, case_id, prefix, varnames,
 
     out = np.zeros((len(files), len(varnames)), dtype=float)
     profiles = {}
+    prof_names = list(profile_vars) + ['PMID'] if profile_vars else []
 
-    for i, filepath in tqdm(enumerate(files), total=len(files),
-                        desc="reading files", unit="file"):
-        with nc.Dataset(filepath, 'r') as ncid:
+    wkey = _weights_key(weights)
+    cache = load_cache(cache_path, wkey)
+    cache_fh = _open_cache_for_append(cache_path) if cache_path else None
+    n_hit = 0
+
+    try:
+        for i, filepath in tqdm(enumerate(files), total=len(files),
+                                desc="reading files", unit="file"):
+            base = os.path.basename(filepath)
+            size, mtime_ns = _file_key(filepath)
+            ent = cache.get(base)
+            if ent is None or (ent["size"], ent["mtime_ns"]) != (size, mtime_ns):
+                ent = {"vars": {}, "profiles": {}}
+            need_vars = [v for v in varnames if v not in ent["vars"]]
+            need_prof = [v for v in profile_vars if v not in ent["profiles"]]
+            if prof_names and 'PMID' not in ent["profiles"]:
+                need_prof = list(profile_vars)
+
+            if need_vars or need_prof:
+                with nc.Dataset(filepath, 'r') as ncid:
+                    vals, profs = _reduce_file(ncid, filepath, prefix, need_vars,
+                                               need_prof, weights)
+                if cache_fh is not None:
+                    cache_fh.write(json.dumps({"version": CACHE_VERSION, "weights": wkey,
+                                               "file": base, "size": size,
+                                               "mtime_ns": mtime_ns,
+                                               "vars": vals, "profiles": profs}) + "\n")
+                    cache_fh.flush()
+                ent = {"vars": {**ent["vars"], **vals},
+                       "profiles": {**ent["profiles"], **profs}}
+            else:
+                n_hit += 1
+
             for j, vname in enumerate(varnames):
-                if vname in ncid.variables:
-                    raw = ncid.variables[vname][0, :, :]
-                    masked = np.ma.masked_equal(raw, -999.0)
-                    out[i, j] = global_mean_2d(masked, weights)
-                else:
-                    key = (prefix, vname)
-                    if key not in _warned_missing:
-                        print(f"  WARNING: variable '{vname}' not found in {os.path.basename(filepath)}, storing NaN")
-                        _warned_missing.add(key)
+                v = ent["vars"][vname]
+                if v is None:
+                    _warn_missing(prefix, vname, filepath)
                     out[i, j] = np.nan
-            if profile_vars:
-                for name in list(profile_vars) + ['PS', 'hyam', 'hybm', 'P0']:
-                    if name not in ncid.variables:
-                        raise KeyError(f"profile variable '{name}' not found in "
-                                       f"{os.path.basename(filepath)}")
-                for vname in profile_vars:
-                    var = ncid.variables[vname]
-                    if var.ndim != 4:
-                        raise ValueError(f"profile variable '{vname}' is not 3D "
-                                         f"(time, lev, lat, lon): dims {var.dimensions}")
-                    raw = np.ma.masked_equal(var[0, :, :, :], -999.0)
-                    prof = global_mean_profile(raw, weights)
-                    if vname not in profiles:
-                        profiles[vname] = np.full((len(files), prof.size), np.nan)
-                    profiles[vname][i] = prof
-                ps = global_mean_2d(np.ma.masked_equal(ncid.variables['PS'][0, :, :], -999.0),
-                                    weights)
-                hyam = np.asarray(ncid.variables['hyam'][:], dtype=float)
-                hybm = np.asarray(ncid.variables['hybm'][:], dtype=float)
-                p0 = float(np.asarray(ncid.variables['P0'][...]))
-                if 'PMID' not in profiles:
-                    profiles['PMID'] = np.full((len(files), hyam.size), np.nan)
-                profiles['PMID'][i] = hyam * p0 + hybm * ps
+                else:
+                    out[i, j] = v
+            for name in prof_names:
+                prof = np.asarray(ent["profiles"][name], dtype=float)
+                if name not in profiles:
+                    profiles[name] = np.full((len(files), prof.size), np.nan)
+                profiles[name][i] = prof
+    finally:
+        if cache_fh is not None:
+            cache_fh.close()
+
+    if cache_path is not None:
+        print(f"  cache: {n_hit} of {len(files)} files reused ({cache_path})")
 
     return out, profiles, files
 
 
 def read_monthly_files(root_path, case_id, prefix, varnames,
-                       start_year, n_months, weights):
+                       start_year, n_months, weights, cache_path=None):
     """
     Area-weighted global means of 2D variables only; see read_monthly_fields.
 
@@ -175,7 +299,8 @@ def read_monthly_files(root_path, case_id, prefix, varnames,
         files -- list of file paths that were actually read
     """
     out, _, files = read_monthly_fields(root_path, case_id, prefix, varnames,
-                                        start_year, n_months, weights)
+                                        start_year, n_months, weights,
+                                        cache_path=cache_path)
     return out, files
 
 

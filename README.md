@@ -51,6 +51,7 @@ usage: trend.py [-h] [-y Y] [-n N] [-p P] [-a A]
                 [--cam] [--cice] [--clm]
                 [--rundir] [--testdir PATH]
                 [--plots] [--save-data] [--timing]
+                [--cache-dir PATH] [--no-cache]
                 [--int1 INT1] [--int2 INT2] [--profile VARS]
                 case_id
 ```
@@ -77,6 +78,8 @@ usage: trend.py [-h] [-y Y] [-n N] [-p P] [-a A]
 | `--plots` | off | Generate time-series line plots after processing |
 | `--save-data` | off | Write global mean time series to text files in `data/` |
 | `--timing` | off | Print wall-clock timing summary at end of run |
+| `--cache-dir PATH` | `cache/` | Directory for the per-file global-mean cache |
+| `--no-cache` | off | Neither read nor write the cache (always re-read every file) |
 | `--int1 INT1` | 1 | Short averaging window in years |
 | `--int2 INT2` | 10 | Long averaging window in years |
 | `--profile VARS` | (none) | Comma-separated 3D `cam.h0` fields (e.g. `T,Q`): also compute per-level global means on model levels (see [Vertical profiles](#vertical-profiles)); written with `--save-data`. Needs `--cam`. |
@@ -163,6 +166,12 @@ python trend.py my_case --cam -p 12 --testdir /path/to/test/data --plots
   `..._camlev_PMID.txt`.
 - **`plots/`** — time-series line plots saved or displayed interactively
   (written with `--plots`).
+
+## Per-file cache
+
+Each file's global means are appended to `cache/<case_id>.cam.h0.jsonl` (and `.cice.h`, `.clm2.h0`) as soon as the file is read, and a later run skips any file whose requested values are already cached. A run killed partway, by a login-node watchdog or a wall-clock limit, loses at most the file it was reading; the rerun picks up where it stopped. Extending a time series reads only the new months, and adding a variable to `vars.in` reads each file once more for that variable alone.
+
+A cached value is reused only while the history file's size and mtime, the area weights, and `CACHE_VERSION` in `trend_core.py` all match, so a rewritten file or a changed grid is read again. Bump `CACHE_VERSION` whenever the per-file reduction changes (masking, weighting, the PMID formula). The cache is append-only JSON lines, later records winning; a partial last line from a killed run is skipped. Moving files from the run directory to the archive keeps size and mtime, so the cache carries over. `--no-cache` bypasses it; to rebuild, move the case's `.jsonl` aside.
 
 ## Vertical profiles
 
